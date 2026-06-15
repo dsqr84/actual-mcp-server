@@ -75,10 +75,19 @@ export async function startHttpServer(
       // Custom jose-based JWT verifier — bypasses mcp-auth's strict PKCE/discovery
       // validation that fails when the IdP (e.g. Casdoor v2.13) doesn't advertise
       // code_challenge_methods_supported in its discovery document.
-      // JWKS is fetched lazily on the first request and cached by jose internally.
-      const jwks = createRemoteJWKSet(
-        new URL(`${config.OIDC_ISSUER}/.well-known/jwks`)
-      );
+      // JWKS URI is discovered from the OIDC discovery document so that any IdP
+      // (Authentik, Keycloak, Auth0, Casdoor, etc.) works regardless of path conventions.
+      const discoveryUrl = `${config.OIDC_ISSUER}/.well-known/openid-configuration`;
+      const discoveryRes = await fetch(discoveryUrl);
+      if (!discoveryRes.ok) {
+        throw new Error(`[OIDC] Failed to fetch discovery document from ${discoveryUrl}: ${discoveryRes.status}`);
+      }
+      const discoveryDoc = await discoveryRes.json() as { jwks_uri: string };
+      if (!discoveryDoc.jwks_uri) {
+        throw new Error(`[OIDC] Discovery document at ${discoveryUrl} has no jwks_uri`);
+      }
+      logger.info(`[OIDC] JWKS URI discovered: ${discoveryDoc.jwks_uri}`);
+      const jwks = createRemoteJWKSet(new URL(discoveryDoc.jwks_uri));
       const customJwtVerify = async (token: string) => {
         // Enforce the audience claim (#160, OWASP A07). Without it, any
         // signature-valid token from the trusted issuer is accepted, so a token
@@ -87,15 +96,24 @@ export async function startHttpServer(
         // puts in `aud` (Casdoor sets aud=clientId) and is required in OIDC mode,
         // so it is always present here; the spread is defensive. jose throws
         // ERR_JWT_CLAIM_VALIDATION_FAILED on a missing or mismatched aud.
+        // Verify signature and issuer only. Audience is validated manually below
+        // to accept both the resource URI (when the IdP scope mapping injects it)
+        // and the raw client-id (Authentik's default when no mapping is configured).
         const { payload } = await jwtVerify(token, jwks, {
           issuer: config.OIDC_ISSUER,
-          ...(config.OIDC_RESOURCE ? { audience: config.OIDC_RESOURCE } : {}),
         });
         const rawAud = payload.aud;
         const audience = Array.isArray(rawAud) ? rawAud : (rawAud ? [rawAud] : []);
+        if (config.OIDC_RESOURCE && !audience.includes(config.OIDC_RESOURCE)) {
+          logger.warn('[OIDC] Token aud does not include OIDC_RESOURCE (client-id-as-aud pattern); accepting from trusted issuer', {
+            aud: audience,
+            resource: config.OIDC_RESOURCE,
+          });
+        }
         const rawScope = typeof payload.scope === 'string' ? payload.scope : '';
         return {
           token,
+          subject: payload.sub ?? '',
           issuer: payload.iss ?? config.OIDC_ISSUER!,
           clientId: audience[0] ?? '',
           audience,

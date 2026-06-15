@@ -9,7 +9,6 @@
 #   Production:   docker compose --profile production up
 # ============================================================================
 
-version: '3.8'
 
 services:
   # --------------------------------------------------------------------------
@@ -107,7 +106,7 @@ services:
       # Development settings
       - NODE_ENV=development
     networks:
-      - actual-net
+      - media_network
 
   # --------------------------------------------------------------------------
   # Actual MCP Server - Production Mode
@@ -120,8 +119,8 @@ services:
     profiles:
       - production
     restart: unless-stopped
-    ports:
-      - "3600:3600"
+    # No direct port binding: Traefik routes external traffic via media_network.
+    # Uncomment if you also need direct local access: "3600:3600"
     volumes:
       # Required: local cache for the @actual-app/api library.
       # The API downloads your budget data locally to run queries; this MUST be a persistent path.
@@ -145,47 +144,28 @@ services:
       # Optional: friendly name for the default budget (default: "Default")
       # - BUDGET_DEFAULT_NAME=My Main Budget
 
-      # ── Multi-Budget Switching (optional) ─────────────────────────────────
-      # The AI can switch between budgets at runtime with actual_budgets_switch.
-      # BUDGET_N_SERVER_URL and BUDGET_N_PASSWORD fall back to ACTUAL_* if omitted,
-      # so budgets on the same server need only NAME and SYNC_ID.
-      #
-      # Budget 1 (same server, same password): SERVER_URL and PASSWORD omitted
-      # - BUDGET_1_NAME=Shared Family Account
-      # - BUDGET_1_SYNC_ID=${BUDGET_1_SYNC_ID}
-      #
-      # Budget 2 (same server, different password): only PASSWORD overridden
-      # - BUDGET_2_NAME=Business
-      # - BUDGET_2_PASSWORD=${BUDGET_2_PASSWORD}
-      # - BUDGET_2_SYNC_ID=${BUDGET_2_SYNC_ID}
-      #
-      # Budget 3 (entirely separate Actual server): full override
-      # - BUDGET_3_NAME=Remote Office
-      # - BUDGET_3_SERVER_URL=https://actual-office.example.com:5006
-      # - BUDGET_3_PASSWORD=${BUDGET_3_PASSWORD}
-      # - BUDGET_3_SYNC_ID=${BUDGET_3_SYNC_ID}
-      # - BUDGET_3_ENCRYPTION_PASSWORD=${BUDGET_3_ENCRYPTION_PASSWORD}
-
       # MCP Bridge settings
       - MCP_BRIDGE_DATA_DIR=/app/data
       - MCP_BRIDGE_PORT=3600
       - MCP_BRIDGE_BIND_HOST=0.0.0.0
-      - MCP_BRIDGE_LOG_LEVEL=info
+      - MCP_BRIDGE_LOG_LEVEL=${MCP_BRIDGE_LOG_LEVEL:-info}
       - MCP_BRIDGE_STORE_LOGS=true
       - MCP_BRIDGE_LOG_DIR=/app/logs
       - MCP_BRIDGE_MAX_FILES=30d
-      # - MCP_BRIDGE_MAX_LOG_SIZE=20m
+
+      # Reverse proxy: tell the server its public URL so clients receive correct URLs
+      - MCP_BRIDGE_PUBLIC_HOST=${MCP_BRIDGE_PUBLIC_HOST:-actual-mcp.dsqr.ca}
+      - MCP_BRIDGE_USE_TLS=${MCP_BRIDGE_USE_TLS:-true}
 
       # Session management
       - MAX_CONCURRENT_SESSIONS=15
       # - SESSION_IDLE_TIMEOUT_MINUTES=5
       # - ACTUAL_API_CONCURRENCY=5
 
-      # Authentication: static Bearer token or OIDC (see README)
-      # - MCP_SSE_AUTHORIZATION=${MCP_SSE_AUTHORIZATION}
-      # - AUTH_PROVIDER=none          # set to 'oidc' for JWKS JWT validation
-      # - OIDC_ISSUER=${OIDC_ISSUER}  # required when AUTH_PROVIDER=oidc
-      # - OIDC_RESOURCE=${OIDC_RESOURCE}
+      # Authentication: OIDC via Authentik
+      - AUTH_PROVIDER=${AUTH_PROVIDER:-oidc}
+      - OIDC_ISSUER=${OIDC_ISSUER:?OIDC_ISSUER is required when AUTH_PROVIDER=oidc}
+      - OIDC_RESOURCE=${OIDC_RESOURCE:?OIDC_RESOURCE is required when AUTH_PROVIDER=oidc}
       # - OIDC_SCOPES=${OIDC_SCOPES}
       # - AUTH_BUDGET_ACL=${AUTH_BUDGET_ACL}
 
@@ -195,7 +175,18 @@ services:
       # Production settings
       - NODE_ENV=production
     networks:
-      - actual-network
+      #- actual-net      # reaches Actual Budget server (actual-actual_server-1)
+      - media_network   # Traefik picks up this container for routing
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=media_network"
+      # HTTPS router
+      - "traefik.http.routers.actual-mcp.rule=Host(`actual-mcp.dsqr.ca`)"
+      - "traefik.http.routers.actual-mcp.entrypoints=websecure"
+      - "traefik.http.routers.actual-mcp.tls=true"
+      # Replace 'letsencrypt' with your Traefik cert resolver name if different
+      - "traefik.http.routers.actual-mcp.tls.certresolver=myresolver"
+      - "traefik.http.services.actual-mcp.loadbalancer.server.port=3600"
     deploy:
       resources:
         limits:
@@ -238,6 +229,9 @@ networks:
   actual-net:
     external: true
     name: actual-net
+  media_network:
+    external: true
+    name: media_network
 
 # ----------------------------------------------------------------------------
 # Volumes
