@@ -474,18 +474,20 @@ export async function startHttpServer(
             logger.debug(`Session initialized: ${sid}`);
             // Store the promise before starting initialization
             sessionInitPromises.set(sid, initPromise);
-            // Persist the verified principal so future requests on this session
-            // can skip JWT re-validation (the token may expire before the session does).
-            if (capturedAuth) {
-              sessionPrincipals.set(sid, { auth: capturedAuth });
-            }
             // Initialize connection pool for this session
             try {
               await connectToActualForSession(sid);
-              // Only register the transport if the pool connection succeeded.
-              // The pool stamped lastActivity when it created the entry, so it
-              // is already the source of truth for this session's idle clock.
+              // Only register the transport and principal if the pool connection
+              // succeeded. The pool stamped lastActivity when it created the entry,
+              // so it is already the source of truth for this session's idle clock.
               transports.set(sid, transport);
+              // Persist the verified principal so future requests on this session
+              // can skip JWT re-validation (the token may expire before the session
+              // does). Stored here, after connect succeeds, so a failed connect
+              // does not leave a dangling entry that the eviction listener never cleans up.
+              if (capturedAuth) {
+                sessionPrincipals.set(sid, { auth: capturedAuth });
+              }
               logger.info(`[SESSION] Actual connection initialized for session: ${sid}`);
               resolveInit?.();
             } catch (err) {
