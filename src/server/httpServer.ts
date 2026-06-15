@@ -1,6 +1,6 @@
 // src/server/httpServer.ts
 import type { ActualMCPConnection } from '../lib/ActualMCPConnection.ts';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -15,7 +15,7 @@ import { getConnectionState, connectToActualForSession, shutdownActualForSession
 import { connectionPool } from '../lib/ActualConnectionPool.js';
 import observability from '../observability.js';
 import config from '../config.js';
-import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { createRemoteJWKSet, jwtVerify, errors as JoseErrors } from 'jose';
 import { createMcpAuth } from '../auth/setup.js';
 import { budgetAclMiddleware } from '../auth/budget-acl.js';
 import * as https from 'node:https';
@@ -99,9 +99,20 @@ export async function startHttpServer(
         // Verify signature and issuer only. Audience is validated manually below
         // to accept both the resource URI (when the IdP scope mapping injects it)
         // and the raw client-id (Authentik's default when no mapping is configured).
-        const { payload } = await jwtVerify(token, jwks, {
-          issuer: config.OIDC_ISSUER,
-        });
+        let payload;
+        try {
+          const result = await jwtVerify(token, jwks, {
+            issuer: config.OIDC_ISSUER,
+          });
+          payload = result.payload;
+        } catch (err) {
+          if (err instanceof JoseErrors.JWTExpired) {
+            logger.warn('[OIDC] JWT token has expired; client must re-authenticate to start a new session', {
+              message: (err as Error).message,
+            });
+          }
+          throw err;
+        }
         const rawAud = payload.aud;
         const audience = Array.isArray(rawAud) ? rawAud : (rawAud ? [rawAud] : []);
         if (config.OIDC_RESOURCE && !audience.includes(config.OIDC_RESOURCE)) {
@@ -123,15 +134,31 @@ export async function startHttpServer(
         };
       };
 
+      // For established sessions, skip JWT re-validation and restore the principal
+      // that was verified when the session was first created. This prevents the
+      // connection from breaking when the access token expires mid-session (the
+      // session idle timeout is the liveness check; the JWT guards session creation).
+      // For new sessions or unrecognized session IDs, full JWT validation applies.
+      const jwtMiddleware = mcpAuth.bearerAuth(customJwtVerify, {
+        resource: config.OIDC_RESOURCE,
+        requiredScopes,
+        showErrorDetails: process.env.NODE_ENV !== 'production',
+      });
       app.use(
         httpPath,
-        mcpAuth.bearerAuth(customJwtVerify, {
-          resource: config.OIDC_RESOURCE,
-          // Audience (aud=clientId) is enforced inside customJwtVerify via jose's
-          // jwtVerify audience option (#160), not here.
-          requiredScopes,
-          showErrorDetails: process.env.NODE_ENV !== 'production',
-        }),
+        (req: Request, res: Response, next: NextFunction) => {
+          const sessionId = req.headers['mcp-session-id'] as string | undefined;
+          if (sessionId) {
+            const stored = sessionPrincipals.get(sessionId);
+            if (stored) {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              (req as any).auth = stored.auth;
+              next();
+              return;
+            }
+          }
+          jwtMiddleware(req, res, next);
+        },
         budgetAclMiddleware as express.RequestHandler,
       );
       logger.info(`[OIDC] JWT authentication enabled — issuer: ${config.OIDC_ISSUER}`);
@@ -140,6 +167,9 @@ export async function startHttpServer(
 
   const transports = new Map<string, StreamableHTTPServerTransport>();
   const sessionInitPromises = new Map<string, Promise<void>>();  // Track session init completion
+  // Per-session auth state: populated at session init, used to bypass JWT re-validation for
+  // established sessions whose token may have expired mid-session.
+  const sessionPrincipals = new Map<string, { auth: unknown }>();
 
   // safe fallback if index didn't provide implementedTools
   const toolsList: string[] = Array.isArray(implementedTools) ? implementedTools : [];
@@ -162,6 +192,7 @@ export async function startHttpServer(
     }
     transports.delete(sessionId);
     sessionInitPromises.delete(sessionId);
+    sessionPrincipals.delete(sessionId);
     logger.info(`[SESSION] Transport torn down for evicted session: ${sessionId}`);
   });
 
@@ -415,6 +446,12 @@ export async function startHttpServer(
         logger.debug('[SESSION] Creating new MCP server + transport for initialize');
         const { server } = createServerInstance();
 
+        // Capture the verified OIDC principal so onsessioninitialized can store it.
+        // This allows subsequent requests on the same session to bypass JWT re-validation,
+        // preventing connection drops when the access token expires mid-session.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const capturedAuth: unknown = config.AUTH_PROVIDER === 'oidc' ? (req as any).auth : undefined;
+
         // Create a promise to track session initialization completion
         let resolveInit: (() => void) | undefined;
         let rejectInit: ((err: unknown) => void) | undefined;
@@ -437,6 +474,11 @@ export async function startHttpServer(
             logger.debug(`Session initialized: ${sid}`);
             // Store the promise before starting initialization
             sessionInitPromises.set(sid, initPromise);
+            // Persist the verified principal so future requests on this session
+            // can skip JWT re-validation (the token may expire before the session does).
+            if (capturedAuth) {
+              sessionPrincipals.set(sid, { auth: capturedAuth });
+            }
             // Initialize connection pool for this session
             try {
               await connectToActualForSession(sid);

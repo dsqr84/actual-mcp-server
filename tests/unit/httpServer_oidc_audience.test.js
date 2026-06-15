@@ -64,11 +64,15 @@ console.log('\n[oidc-audience] wiring');
 const here = dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(resolve(here, '../../src/server/httpServer.ts'), 'utf8');
 
-await check('customJwtVerify passes audience: config.OIDC_RESOURCE to jwtVerify', async () => {
-  assert.match(src, /audience:\s*config\.OIDC_RESOURCE/);
+// Authentik issues tokens with aud=clientId, not aud=resourceURI. The fix
+// validates audience MANUALLY so both patterns are accepted, rather than
+// passing `audience: config.OIDC_RESOURCE` to jose (which would reject the
+// client-id-as-aud case). See commit 5d0a659.
+await check('customJwtVerify validates audience against config.OIDC_RESOURCE manually', async () => {
+  assert.match(src, /audience\.includes\(config\.OIDC_RESOURCE\)/);
 });
-await check('the misleading "audience intentionally omitted" comment is gone', async () => {
-  assert.ok(!/audience intentionally omitted/.test(src));
+await check('customJwtVerify logs a warning for the client-id-as-aud pattern (Authentik)', async () => {
+  assert.match(src, /client-id-as-aud pattern/);
 });
 
 console.log(`\n[oidc-audience] Results: ${passed} passed, ${failed} failed`);
