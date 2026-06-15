@@ -157,7 +157,7 @@ export async function startHttpServer(
               return;
             }
           }
-          jwtMiddleware(req, res, next);
+          Promise.resolve(jwtMiddleware(req, res, next)).catch(next);
         },
         budgetAclMiddleware as express.RequestHandler,
       );

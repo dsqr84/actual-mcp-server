@@ -49,6 +49,8 @@ export function isKnownBenignRejection(reason: unknown): boolean {
     reasonStr.includes('GoCardless') ||
     reasonStr.includes('SimpleFIN') ||
     reasonStr.includes('Authentication failed:') ||
+    reasonStr.includes('ERR_JWT_EXPIRED') ||
+    reasonStr.includes('"exp" claim timestamp check failed') ||
     isActualApiWorkerRejection(reason)
   );
 }
