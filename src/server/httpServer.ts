@@ -16,6 +16,7 @@ import { connectionPool } from '../lib/ActualConnectionPool.js';
 import observability from '../observability.js';
 import config from '../config.js';
 import { createRemoteJWKSet, jwtVerify, errors as JoseErrors } from 'jose';
+import { MCPAuthTokenVerificationError } from 'mcp-auth';
 import { createMcpAuth } from '../auth/setup.js';
 import { budgetAclMiddleware } from '../auth/budget-acl.js';
 import * as https from 'node:https';
@@ -111,7 +112,19 @@ export async function startHttpServer(
               message: (err as Error).message,
             });
           }
-          throw err;
+          // Wrap the raw jose error before it leaves this function. mcp-auth's
+          // own bearerAuthHandler only sends a proper 401 with a
+          // WWW-Authenticate: resource_metadata=... header (the signal an
+          // OAuth client like Claude.ai needs to refresh/re-authenticate) when
+          // the thrown error is an instance of MCPAuthTokenVerificationError.
+          // A raw jose error (JWTExpired, JWSSignatureVerificationFailed, etc.)
+          // falls through its instanceof checks, gets rethrown, and previously
+          // reached Express with no error handler registered: the client got a
+          // generic 500 with no re-auth hint and kept retrying with the same
+          // stale token forever. Wrapping fixes the actual client-visible
+          // failure; the Promise.resolve(...).catch(next) below remains as a
+          // defense-in-depth net for any other unexpected throw.
+          throw new MCPAuthTokenVerificationError('invalid_token', err);
         }
         const rawAud = payload.aud;
         const audience = Array.isArray(rawAud) ? rawAud : (rawAud ? [rawAud] : []);
