@@ -88,6 +88,16 @@ export async function startHttpServer(
         throw new Error(`[OIDC] Discovery document at ${discoveryUrl} has no jwks_uri`);
       }
       logger.info(`[OIDC] JWKS URI discovered: ${discoveryDoc.jwks_uri}`);
+
+      // Serve RFC 8414 Authorization Server Metadata so mcp-remote can discover
+      // the token_endpoint. mcp-remote looks for /.well-known/oauth-authorization-server
+      // on the resource server origin as a fallback. Authentik only exposes OIDC
+      // discovery under the app-slug path which mcp-remote cannot find. Serving the
+      // fetched OIDC discovery doc here bridges the gap.
+      app.get('/.well-known/oauth-authorization-server', (_req, res) => {
+        res.json(discoveryDoc);
+      });
+
       const jwks = createRemoteJWKSet(new URL(discoveryDoc.jwks_uri));
       const customJwtVerify = async (token: string) => {
         // Enforce the audience claim (#160, OWASP A07). Without it, any
