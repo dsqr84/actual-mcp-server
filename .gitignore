@@ -84,3 +84,6 @@ playwright-report/
 
 # Claude Code runtime lock (ephemeral, per-session PID)
 .claude/scheduled_tasks.lock
+
+# Working screenshots
+Screenshot*.png

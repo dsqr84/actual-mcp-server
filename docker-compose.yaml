@@ -186,6 +186,7 @@ services:
       - "traefik.http.routers.actual-mcp.tls=true"
       # Replace 'letsencrypt' with your Traefik cert resolver name if different
       - "traefik.http.routers.actual-mcp.tls.certresolver=myresolver"
+      - "traefik.http.routers.actual-mcp.middlewares=sec-headers@file"
       - "traefik.http.services.actual-mcp.loadbalancer.server.port=3600"
     deploy:
       resources:
