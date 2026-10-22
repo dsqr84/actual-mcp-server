@@ -16,7 +16,7 @@ set -uo pipefail
 
 # Reuse the bot token already configured for the home telegram bot,
 # so the credential only lives in one place.
-TELEGRAM_API_KEY=$(grep -E '^TELEGRAM_API_KEY=' /home/dan/dev/python/home_telegram_bot/.env | cut -d= -f2-)
+TELEGRAM_API_KEY=$(grep -E '^TELEGRAM_API_KEY=' /home/dan/dev/personal/telegram-bots/home_telegram_bot/.env | cut -d= -f2-)
 CHAT_ID="-4625874053" # home group
 
 send_telegram() {
