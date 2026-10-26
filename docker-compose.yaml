@@ -140,7 +140,8 @@ services:
       # #161: if you set this AND the upstream above is http://, the server
       # refuses to start (cleartext password). Use an https:// upstream, or add
       # - ALLOW_INSECURE_UPSTREAM=true when the hop is a trusted internal network.
-      # - ACTUAL_BUDGET_PASSWORD=${ACTUAL_BUDGET_PASSWORD}
+      # Dunk Budget N is E2E-encrypted since 2026-10-26; ACTUAL_SERVER_URL is https.
+      - ACTUAL_BUDGET_PASSWORD=${ACTUAL_BUDGET_PASSWORD:?ACTUAL_BUDGET_PASSWORD is required}
       # Optional: friendly name for the default budget (default: "Default")
       # - BUDGET_DEFAULT_NAME=My Main Budget
 
